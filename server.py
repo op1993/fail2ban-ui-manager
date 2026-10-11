@@ -137,14 +137,18 @@ def sites():
         )
         # Map/geo variables can be referenced by an active deny condition.
         conditional_deny = bool(deny_variables)
+        # Do not infer a jail from generic words such as "auth".
+        # A verified site-to-jail association requires inspecting jail log paths,
+        # filters and actions; until then, only show exact service-name hints.
+        service_names = {name.split(".")[0].lower() for name in names}
         related = sorted(jail for jail in active_jails
-                         if any(part in jail.lower() for name in names
-                                for part in (name.split(".")[0].lower(),)
-                                if len(part) >= 4))
+                         if any(jail.lower() == service or
+                                jail.lower().startswith(service + "-")
+                                for service in service_names))
         result.append(dict(
             file=path.removeprefix("/etc/nginx/"),
             domain=", ".join(names),
-            jail=", ".join(related) if related else "No matching jail",
+            jail=", ".join(related) if related else "No name match",
             ban="Ban variable referenced" if ban_detected else "Not detected",
             rate="limit_req active" if rate_limited else "Not detected",
             access=("Password POST guard" if password_guard else
@@ -246,7 +250,7 @@ class Handler(BaseHTTPRequestHandler):
                 + (f'<p>{esc(error)}</p>' if error else '')
                 + '<h2>Jails</h2><table><tr><th>Jail</th><th>Failed</th><th>Banned</th><th>IP actions</th></tr>'
                 + ''.join(rows) + '</table><h2>Nginx sites</h2>'
-                + '<p>Read-only configuration inspection. Detection does not prove a rule blocks traffic; matching jails are name-based hints.</p>'
+                + '<p>Read-only configuration inspection. Detection does not prove a rule blocks traffic; jail associations are name-based hints, not verified links.</p>'
                 + '<table><tr><th>Server name</th><th>File</th><th>Matching jail</th><th>Ban check</th><th>Rate limit</th><th>Access rules</th></tr>'
                 + ''.join(domain_rows) + '</table></main></html>')
         self.send(200, page)

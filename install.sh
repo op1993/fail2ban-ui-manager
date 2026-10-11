@@ -2,10 +2,11 @@
 set -Eeuo pipefail
 APP_DIR=/opt/fail2ban-manager
 SERVICE=fail2ban-manager
-RAW=https://raw.githubusercontent.com/op1993/fail2ban-ui-manager/main
+REPO=op1993/fail2ban-ui-manager
+RAW_BASE=https://raw.githubusercontent.com/$REPO
 SELF=/usr/bin/fail2ban-manager
 ACTION=${1:-install}
-INSTALLER_VERSION=2026-10-12.4
+INSTALLER_VERSION=2026-10-12.5
 require_root() { if [[ ${EUID} -ne 0 ]]; then echo "Run as root" >&2; exit 1; fi; }
 download() {
   local url="$1" destination="$2"
@@ -18,7 +19,18 @@ deploy() {
   command -v systemctl >/dev/null || { echo "systemd is required" >&2; exit 1; }
   TMP_DIR=$(mktemp -d)
   trap 'if [[ -n "${TMP_DIR:-}" && -d "$TMP_DIR" ]]; then rm -rf -- "$TMP_DIR"; fi' EXIT
-  download "$RAW/server.py" "$TMP_DIR/server.py"
+  download "https://api.github.com/repos/$REPO/commits/main?nocache=$(date +%s%N)" "$TMP_DIR/commit.json"
+  COMMIT_SHA=$(python3 - "$TMP_DIR/commit.json" <<'PY'
+import json, re, sys
+with open(sys.argv[1], encoding="utf-8") as file:
+    sha = json.load(file)["sha"]
+if not re.fullmatch(r"[0-9a-f]{40}", sha):
+    raise ValueError("Invalid commit SHA")
+print(sha)
+PY
+)
+  echo "Downloading GitHub commit: $COMMIT_SHA"
+  download "$RAW_BASE/$COMMIT_SHA/server.py" "$TMP_DIR/server.py"
   # Check syntax without creating __pycache__ in the app directory.
   python3 - "$TMP_DIR/server.py" <<'PY'
 import ast
@@ -26,7 +38,8 @@ import pathlib
 import sys
 ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 PY
-  download "$RAW/install.sh" "$TMP_DIR/install.sh"
+  download "$RAW_BASE/$COMMIT_SHA/install.sh" "$TMP_DIR/install.sh"
+  bash -n "$TMP_DIR/install.sh"
   mkdir -p /etc/fail2ban-manager
   if [[ ! -f /etc/fail2ban-manager/auth.json ]]; then
     [[ -t 0 ]] || { echo "Interactive terminal required for initial password setup" >&2; exit 1; }
@@ -73,7 +86,8 @@ EOF
   systemctl daemon-reload
   systemctl enable "$SERVICE.service" >/dev/null
   systemctl restart "$SERVICE.service"
-  echo "Installer version: $INSTALLER_VERSION"
+  echo "Installed commit: $COMMIT_SHA"
+  "$SELF" version
   echo "Installed/updated. UI: http://192.168.0.229:8765 (LAN only; login required)"
   systemctl --no-pager --full status "$SERVICE.service" || true
 }

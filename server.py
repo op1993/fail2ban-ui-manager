@@ -81,24 +81,28 @@ def jail_status(name):
                 banned=value("Currently banned"), ips=value("Banned IP list").split())
 
 def sites():
-    """Discover active virtual hosts from nginx -T (including sites-enabled)."""
+    """Inspect effective Nginx config; report observed rules, not security guarantees."""
     output = run("nginx", "-T")
-    result = []
-    current_file = None
-    chunks = []
-    buffer = []
+    chunks, path, lines = [], None, []
     for line in output.splitlines(keepends=True):
         match = re.match(r"^# configuration file (.+):\s*$", line)
         if match:
-            if current_file is not None:
-                chunks.append((current_file, "".join(buffer)))
-            current_file = match.group(1)
-            buffer = []
-        elif current_file is not None:
-            buffer.append(line)
-    if current_file is not None:
-        chunks.append((current_file, "".join(buffer)))
-    seen = set()
+            if path is not None:
+                chunks.append((path, "".join(lines)))
+            path, lines = match.group(1), []
+        elif path is not None:
+            lines.append(line)
+    if path is not None:
+        chunks.append((path, "".join(lines)))
+
+    # Only active sites are listed; map definitions may live in other files.
+    config = "\n".join(source for _, source in chunks)
+    cleaned_config = re.sub(r"(?m)#.*$", "", config)
+    definitions = dict(re.findall(
+        r"\b(?:map|geo)\s+[^{}]*?\s+(\$[A-Za-z_]\w*)\s*\{([^{}]*)\}",
+        cleaned_config, re.S))
+    active_jails = set(jails())
+    result, seen = [], set()
     for path, source in chunks:
         if not (path.startswith("/etc/nginx/sites-enabled/") or
                 path.startswith("/etc/nginx/conf.d/")):
@@ -112,8 +116,41 @@ def sites():
         if key in seen:
             continue
         seen.add(key)
-        result.append((path.removeprefix("/etc/nginx/"), ", ".join(names),
-                       bool(re.search(r"\$[A-Za-z0-9_]+_banned\b", cleaned))))
+
+        # A declared variable is not an enforced rule. Look for actual use
+        # in a conditional that returns a deny status.
+        deny_conditions = re.findall(
+            r"\bif\s*\(\s*(\$[A-Za-z_]\w*)\s*\)\s*\{\s*return\s+(?:403|401|444)\s*;",
+            cleaned)
+        deny_variables = set(deny_conditions)
+        ban_variables = set(re.findall(r"\$[A-Za-z_]\w*_banned\b", cleaned))
+        ban_checks = sorted(ban_variables & deny_variables)
+        # A ban variable may also be used in an Nginx map or a different
+        # condition; report as detected, but not verified.
+        ban_detected = bool(ban_variables)
+        rate_limited = bool(re.search(r"(?m)^\s*limit_req\s+zone=", cleaned))
+        access_rules = bool(re.search(r"(?m)^\s*(?:allow|deny)\s+\S+\s*;", cleaned))
+        password_guard = any(
+            variable in definitions and
+            ("POST" in definitions[variable] or "POST" in cleaned_config)
+            for variable in deny_variables
+        )
+        # Map/geo variables can be referenced by an active deny condition.
+        conditional_deny = bool(deny_variables)
+        related = sorted(jail for jail in active_jails
+                         if any(part in jail.lower() for name in names
+                                for part in (name.split(".")[0].lower(),)
+                                if len(part) >= 4))
+        result.append(dict(
+            file=path.removeprefix("/etc/nginx/"),
+            domain=", ".join(names),
+            jail=", ".join(related) if related else "No matching jail",
+            ban="Ban variable referenced" if ban_detected else "Not detected",
+            rate="limit_req active" if rate_limited else "Not detected",
+            access=("Password POST guard" if password_guard else
+                    "Conditional deny" if conditional_deny else
+                    "allow/deny rules" if access_rules else "Not detected"),
+        ))
     return result
 
 class Handler(BaseHTTPRequestHandler):
@@ -198,9 +235,10 @@ class Handler(BaseHTTPRequestHandler):
                     + f'<button>Unban {esc(ip)}</button></form>')
             rows.append(f'<tr><td>{esc(record["name"])}</td><td>{esc(record["failed"])}</td>'
                         + f'<td>{esc(record["banned"])}</td><td>{" ".join(buttons) or "—"}</td></tr>')
-        domain_rows = [f'<tr><td>{esc(domain)}</td><td>{esc(file)}</td>'
-                       + f'<td>{"Ban check found" if protected else "Not found"}</td></tr>'
-                       for file, domain, protected in domains]
+        domain_rows = [f'<tr><td>{esc(item["domain"])}</td><td>{esc(item["file"])}</td>'
+                       + f'<td>{esc(item["jail"])}</td><td>{esc(item["ban"])}</td>'
+                       + f'<td>{esc(item["rate"])}</td><td>{esc(item["access"])}</td></tr>'
+                       for item in domains]
         style = "body{font:15px system-ui;background:#121826;color:#e7edf7;margin:0}main{max-width:1100px;margin:32px auto;padding:0 20px}table{width:100%;border-collapse:collapse;background:#202c42}td,th{text-align:left;padding:12px;border-bottom:1px solid #394760}button{background:#547ce2;border:0;color:white;padding:8px;border-radius:5px;cursor:pointer}p{color:#aebbd0}"
         page = ('<!doctype html><html lang="en"><meta charset="utf-8"><title>Fail2ban Manager</title>'
                 + f'<style>{style}</style><main><form method="post" action="/logout" style="float:right"><input type="hidden" name="token" value="{TOKEN}"><button>Sign out</button></form><h1>Fail2ban Manager</h1>'
@@ -208,8 +246,8 @@ class Handler(BaseHTTPRequestHandler):
                 + (f'<p>{esc(error)}</p>' if error else '')
                 + '<h2>Jails</h2><table><tr><th>Jail</th><th>Failed</th><th>Banned</th><th>IP actions</th></tr>'
                 + ''.join(rows) + '</table><h2>Nginx sites</h2>'
-                + '<p>Ban check detection is heuristic and does not prove protection is active.</p>'
-                + '<table><tr><th>Server name</th><th>File</th><th>Ban check</th></tr>'
+                + '<p>Read-only configuration inspection. Detection does not prove a rule blocks traffic; matching jails are name-based hints.</p>'
+                + '<table><tr><th>Server name</th><th>File</th><th>Matching jail</th><th>Ban check</th><th>Rate limit</th><th>Access rules</th></tr>'
                 + ''.join(domain_rows) + '</table></main></html>')
         self.send(200, page)
 

@@ -16,7 +16,8 @@ import re
 import secrets
 import subprocess
 
-HOST = os.getenv("F2B_MANAGER_HOST", "127.0.0.1")
+HOST = os.getenv("F2B_MANAGER_HOST", "0.0.0.0")
+ALLOWED_NETWORKS = tuple(ipaddress.ip_network(cidr.strip()) for cidr in os.getenv("F2B_MANAGER_ALLOWED_NETWORKS", "127.0.0.0/8,192.168.0.0/24").split(",") if cidr.strip())
 AUTH_FILE = Path("/etc/fail2ban-manager/auth.json")
 SESSION_LIFETIME = 12 * 3600
 LOGIN_ATTEMPTS = {}
@@ -93,6 +94,13 @@ def sites():
     return result
 
 class Handler(BaseHTTPRequestHandler):
+    def allowed_client(self):
+        try:
+            address = ipaddress.ip_address(self.client_address[0])
+            return any(address in network for network in ALLOWED_NETWORKS)
+        except ValueError:
+            return False
+
     def send(self, code, content, content_type="text/html; charset=utf-8"):
         data = content.encode()
         self.send_response(code)
@@ -142,6 +150,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if not self.allowed_client():
+            return self.send(403, "Network not allowed", "text/plain")
         if self.path != "/":
             return self.send(404, "Not found", "text/plain")
         if not self.authenticated():
@@ -181,6 +191,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, page)
 
     def do_POST(self):
+        if not self.allowed_client():
+            return self.send(403, "Network not allowed", "text/plain")
         if self.path == "/login":
             try:
                 values = self.read_form()

@@ -3,8 +3,9 @@ set -Eeuo pipefail
 APP_DIR=/opt/fail2ban-manager
 SERVICE=fail2ban-manager
 RAW=https://raw.githubusercontent.com/op1993/fail2ban-ui-manager/main
-SELF=/usr/local/bin/fail2ban-manager
+SELF=/usr/bin/fail2ban-manager
 ACTION=${1:-install}
+INSTALLER_VERSION=2026-10-12.2
 require_root() { if [[ ${EUID} -ne 0 ]]; then echo "Run as root" >&2; exit 1; fi; }
 download() {
   local url="$1" destination="$2"
@@ -16,7 +17,7 @@ deploy() {
   command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
   command -v systemctl >/dev/null || { echo "systemd is required" >&2; exit 1; }
   TMP_DIR=$(mktemp -d)
-  trap 'rm -rf "${TMP_DIR:-}"' EXIT
+  trap 'if [[ -n "${TMP_DIR:-}" && -d "$TMP_DIR" ]]; then rm -rf -- "$TMP_DIR"; fi' EXIT
   download "$RAW/server.py" "$TMP_DIR/server.py"
   # Check syntax without creating __pycache__ in the app directory.
   python3 - "$TMP_DIR/server.py" <<'PY'
@@ -29,6 +30,7 @@ PY
   mkdir -p "$APP_DIR"
   install -m 0644 "$TMP_DIR/server.py" "$APP_DIR/server.py"
   install -m 0755 "$TMP_DIR/install.sh" "$SELF"
+  rm -f /usr/local/bin/fail2ban-manager
   cat >"/etc/systemd/system/$SERVICE.service" <<EOF
 [Unit]
 Description=Local Fail2ban UI Manager
@@ -51,11 +53,13 @@ EOF
   systemctl daemon-reload
   systemctl enable "$SERVICE.service" >/dev/null
   systemctl restart "$SERVICE.service"
+  echo "Installer version: $INSTALLER_VERSION"
   echo "Installed/updated. UI: http://127.0.0.1:8765 (SSH tunnel required)"
   systemctl --no-pager --full status "$SERVICE.service" || true
 }
 case "$ACTION" in
   install|update) deploy ;;
+  version) echo "$INSTALLER_VERSION" ;;
   status) systemctl --no-pager --full status "$SERVICE.service" ;;
   restart) require_root; systemctl restart "$SERVICE.service"; systemctl --no-pager status "$SERVICE.service" ;;
   uninstall)
@@ -64,8 +68,8 @@ case "$ACTION" in
     rm -f "/etc/systemd/system/$SERVICE.service"
     systemctl daemon-reload
     rm -rf "$APP_DIR"
-    rm -f "$SELF"
+    rm -f "$SELF" /usr/local/bin/fail2ban-manager
     echo "Removed Fail2ban Manager (Nginx and Fail2ban untouched)."
     ;;
-  *) echo "Usage: fail2ban-manager {install|update|status|restart|uninstall}" >&2; exit 2 ;;
+  *) echo "Usage: fail2ban-manager {install|update|status|restart|uninstall|version}" >&2; exit 2 ;;
 esac

@@ -5,7 +5,7 @@ SERVICE=fail2ban-manager
 RAW=https://raw.githubusercontent.com/op1993/fail2ban-ui-manager/main
 SELF=/usr/bin/fail2ban-manager
 ACTION=${1:-install}
-INSTALLER_VERSION=2026-10-12.3
+INSTALLER_VERSION=2026-10-12.4
 require_root() { if [[ ${EUID} -ne 0 ]]; then echo "Run as root" >&2; exit 1; fi; }
 download() {
   local url="$1" destination="$2"
@@ -74,7 +74,7 @@ EOF
   systemctl enable "$SERVICE.service" >/dev/null
   systemctl restart "$SERVICE.service"
   echo "Installer version: $INSTALLER_VERSION"
-  echo "Installed/updated. UI: http://127.0.0.1:8765 (SSH tunnel required)"
+  echo "Installed/updated. UI: http://192.168.0.229:8765 (LAN only; login required)"
   systemctl --no-pager --full status "$SERVICE.service" || true
 }
 case "$ACTION" in

@@ -15,21 +15,20 @@ deploy() {
   command -v python3 >/dev/null || { echo "Python 3 is required" >&2; exit 1; }
   command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
   command -v systemctl >/dev/null || { echo "systemd is required" >&2; exit 1; }
-  local tmp
-  tmp=$(mktemp -d)
-  trap 'rm -rf "$tmp"' EXIT
-  download "$RAW/server.py" "$tmp/server.py"
+  TMP_DIR=$(mktemp -d)
+  trap 'rm -rf "${TMP_DIR:-}"' EXIT
+  download "$RAW/server.py" "$TMP_DIR/server.py"
   # Check syntax without creating __pycache__ in the app directory.
-  python3 - "$tmp/server.py" <<'PY'
+  python3 - "$TMP_DIR/server.py" <<'PY'
 import ast
 import pathlib
 import sys
 ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 PY
-  download "$RAW/install.sh" "$tmp/install.sh"
+  download "$RAW/install.sh" "$TMP_DIR/install.sh"
   mkdir -p "$APP_DIR"
-  install -m 0644 "$tmp/server.py" "$APP_DIR/server.py"
-  install -m 0755 "$tmp/install.sh" "$SELF"
+  install -m 0644 "$TMP_DIR/server.py" "$APP_DIR/server.py"
+  install -m 0755 "$TMP_DIR/install.sh" "$SELF"
   cat >"/etc/systemd/system/$SERVICE.service" <<EOF
 [Unit]
 Description=Local Fail2ban UI Manager

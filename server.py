@@ -81,16 +81,40 @@ def jail_status(name):
                 banned=value("Currently banned"), ips=value("Banned IP list").split())
 
 def sites():
+    """Discover active virtual hosts from nginx -T (including sites-enabled)."""
+    output = run("nginx", "-T")
     result = []
-    for file in sorted(NGINX_DIR.glob("*.conf")):
-        try:
-            source = file.read_text(errors="replace")
-        except OSError:
+    current_file = None
+    chunks = []
+    for line in output.splitlines(keepends=True):
+        match = re.match(r"^# configuration file (.+):\s*$", line)
+        if match:
+            if current_file is not None:
+                chunks.append((current_file, "".join(buffer)))
+            current_file = match.group(1)
+            buffer = []
+        elif current_file is not None:
+            buffer.append(line)
+    if current_file is not None:
+        chunks.append((current_file, "".join(buffer)))
+    seen = set()
+    for path, source in chunks:
+        # Ignore maps, snippets, and unused server definitions.
+        if not (path.startswith("/etc/nginx/sites-enabled/") or
+                path.startswith("/etc/nginx/conf.d/")):
             continue
-        names = re.findall(r"^\s*server_name\s+([^;]+);", source, re.M)
-        if names:
-            result.append((file.name, ", ".join(names),
-                           bool(re.search(r"\$\w+_banned\b", source))))
+        # nginx -T includes comments; strip them for simple heuristic matching.
+        cleaned = re.sub(r"(?m)#.*$", "", source)
+        names = re.findall(r"(?m)^\s*server_name\s+([^;]+);", cleaned)
+        if not names:
+            continue
+        names = list(dict.fromkeys(name for group in names for name in group.split()))
+        key = (path, tuple(names))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append((path.removeprefix("/etc/nginx/"), ", ".join(names),
+                       bool(re.search(r"\$[A-Za-z0-9_]+_banned\b", cleaned))))
     return result
 
 class Handler(BaseHTTPRequestHandler):

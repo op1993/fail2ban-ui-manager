@@ -5,7 +5,7 @@ SERVICE=fail2ban-manager
 RAW=https://raw.githubusercontent.com/op1993/fail2ban-ui-manager/main
 SELF=/usr/bin/fail2ban-manager
 ACTION=${1:-install}
-INSTALLER_VERSION=2026-10-12.2
+INSTALLER_VERSION=2026-10-12.3
 require_root() { if [[ ${EUID} -ne 0 ]]; then echo "Run as root" >&2; exit 1; fi; }
 download() {
   local url="$1" destination="$2"
@@ -27,6 +27,26 @@ import sys
 ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 PY
   download "$RAW/install.sh" "$TMP_DIR/install.sh"
+  mkdir -p /etc/fail2ban-manager
+  if [[ ! -f /etc/fail2ban-manager/auth.json ]]; then
+    [[ -t 0 ]] || { echo "Interactive terminal required for initial password setup" >&2; exit 1; }
+    read -r -p "Admin username [admin]: " admin_name
+    admin_name=${admin_name:-admin}
+    [[ "$admin_name" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || exit 1
+    read -r -s -p "Admin password (min 12 chars): " admin_pass
+    echo
+    [[ ${#admin_pass} -ge 12 ]] || { echo "Password too short" >&2; exit 1; }
+    ADMIN_NAME="$admin_name" ADMIN_PASS="$admin_pass" python3 - <<'PY'
+import hashlib, json, os, secrets
+salt = secrets.token_bytes(16)
+digest = hashlib.pbkdf2_hmac("sha256", os.environ["ADMIN_PASS"].encode(), salt, 350000)
+data = {"username": os.environ["ADMIN_NAME"], "password_hash": "pbkdf2_sha256$350000$" + salt.hex() + "$" + digest.hex(), "session_secret": secrets.token_hex(32)}
+fd = os.open("/etc/fail2ban-manager/auth.json", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+with os.fdopen(fd, "w") as out:
+    json.dump(data, out)
+PY
+    unset admin_pass
+  fi
   mkdir -p "$APP_DIR"
   install -m 0644 "$TMP_DIR/server.py" "$APP_DIR/server.py"
   install -m 0755 "$TMP_DIR/install.sh" "$SELF"

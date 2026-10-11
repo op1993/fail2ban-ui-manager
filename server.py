@@ -86,6 +86,7 @@ def sites():
     result = []
     current_file = None
     chunks = []
+    buffer = []
     for line in output.splitlines(keepends=True):
         match = re.match(r"^# configuration file (.+):\s*$", line)
         if match:
@@ -99,11 +100,9 @@ def sites():
         chunks.append((current_file, "".join(buffer)))
     seen = set()
     for path, source in chunks:
-        # Ignore maps, snippets, and unused server definitions.
         if not (path.startswith("/etc/nginx/sites-enabled/") or
                 path.startswith("/etc/nginx/conf.d/")):
             continue
-        # nginx -T includes comments; strip them for simple heuristic matching.
         cleaned = re.sub(r"(?m)#.*$", "", source)
         names = re.findall(r"(?m)^\s*server_name\s+([^;]+);", cleaned)
         if not names:
